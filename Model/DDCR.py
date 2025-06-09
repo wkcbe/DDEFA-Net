@@ -1,30 +1,33 @@
 import torch
 import torch.nn as nn
 from .SpectFormer import SpectFormer
-from .GAM import GAMttention
 
 def default_conv(in_channels, out_channels, kernel_size, bias=True):
     return nn.Conv2d(in_channels, out_channels, kernel_size, padding=(kernel_size // 2), bias=bias)
+
 class LocalContextExtractor(nn.Module):
     def __init__(self, in_channels, out_channels, reduction=8):
         super().__init__()
-        self.conv1 = nn.Sequential(
+        self.conv = nn.Sequential(
             nn.Conv2d(in_channels, in_channels // reduction, kernel_size=1, padding=0, bias=True),
             nn.Conv2d(in_channels // reduction, in_channels // reduction, kernel_size=3, padding=1, bias=True),
-            nn.Conv2d(in_channels // reduction, in_channels, kernel_size=1, padding=0, bias=True),
+            nn.Conv2d(in_channels // reduction, out_channels, kernel_size=1, padding=0, bias=True),
             nn.LeakyReLU(negative_slope=0.2, inplace=True),
         )
-        self.reduction = reduction
-        self.conv2 = default_conv(in_channels, out_channels, 1, bias=True)
-        self.act1 = nn.ReLU(inplace=False)
-        self.cga = GAMttention(out_channels, reduction=self.reduction)
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(out_channels, out_channels // reduction, bias=False),
+            nn.ReLU(),
+            nn.Linear(out_channels//reduction, out_channels, bias=False),
+            nn.Sigmoid()
+        )
 
     def forward(self, x):
-        x = self.conv1(x) + x
+        x = self.conv(x)
         B, C, _, _ = x.size()
-        x = self.conv2(x)
-        cga = self.cga(x)
-        return cga
+        y = self.avg_pool(x).view(B, C)
+        y = self.fc(y).view(B, C, 1, 1)
+        return x * y.expand_as(x)
 
 class CAViT(nn.Module):
     def __init__(self, in_channels, out_channels, img_size=64, patch_size=1, embed_dim=64, groups=1):
